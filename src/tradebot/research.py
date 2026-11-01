@@ -93,11 +93,16 @@ def summarise(
 ) -> Diagnosis | None:
     if preds.empty:
         return None
-    daily_ic = preds.groupby("session_date").apply(
+    # Everything is CROSS-SECTIONAL: compare stocks at the same moment, because that's
+    # the choice the strategy makes. Pooling across time would mostly sort predictions
+    # by which period they came from (bull vs bear), not by which stock they picked.
+    ic_by_time = preds.groupby("timestamp").apply(
         lambda g: _rank_corr(g["expected_return"], g["fwd_ret"]), include_groups=False
-    ).dropna()
-    ranks = preds["expected_return"].rank(method="first")
-    preds = preds.assign(decile=pd.qcut(ranks, 10, labels=False) + 1)
+    )
+    session_of = preds.groupby("timestamp")["session_date"].first()
+    daily_ic = ic_by_time.groupby(session_of).mean().dropna()
+    pct = preds.groupby("timestamp")["expected_return"].rank(method="first", pct=True)
+    preds = preds.assign(decile=np.ceil(pct * 10).clip(1, 10).astype(int))
     deciles = preds.groupby("decile").agg(
         n=("fwd_ret", "size"),
         predicted_bps=("expected_return", lambda x: x.mean() * 1e4),
@@ -152,27 +157,32 @@ def format_diagnosis(d: Diagnosis) -> str:
         f"\n=== {d.market.value} | strategy={d.strategy} | horizon={d.horizon} | signal diagnostics ===",
         f"  out-of-sample days       {d.days}",
         f"  predictions scored       {d.predictions}",
-        f"  mean daily IC            {d.ic_mean:+.4f}",
+        f"  mean cross-sectional IC  {d.ic_mean:+.4f}",
         f"  IC t-stat                {d.ic_tstat:+.2f}   (|t| < 2: indistinguishable from noise)",
         f"  round-trip cost          {d.round_trip_bps:.1f} bps  (typical position)",
         f"  average stock            {d.mean_bps:.1f} bps  (what random picks earned over the horizon)",
         "",
+        "  decile = rank of the prediction among stocks at the same time (10 = model's favourites)",
         "  decile  predicted_bps  realised_bps  hit_rate        n",
     ]
     for dec, r in d.deciles.iterrows():
         lines.append(f"  {dec:>6}  {r.predicted_bps:>13.1f}  {r.realised_bps:>12.1f}  {r.hit_rate:>8.1%}  {int(r.n):>7}")
-    gap = d.top_decile_bps - d.round_trip_bps
+    # A long-only pick adds value only if it beats a random pick (the average stock) by more than costs
+    excess = d.top_decile_bps - d.mean_bps
+    gap = excess - d.round_trip_bps
     if not np.isfinite(d.ic_tstat) or abs(d.ic_tstat) < 2:
         verdict = "No reliable signal. Change features, horizon or universe before tuning anything else."
     elif d.ic_mean <= 0:
         verdict = "Signal is reliably WRONG (negative IC). Check for a bug, or flip the rule."
     elif gap < 0:
-        verdict = f"Real signal, but the top decile is {abs(gap):.1f} bps short of covering costs."
-    else:
-        spread = d.top_decile_bps - d.bottom_decile_bps
         verdict = (
-            f"Top decile beats costs by {gap:.1f} bps (top-bottom spread {spread:.1f} bps). "
-            "Check it against simply holding the universe before trusting it."
+            f"Real signal, but the top decile beats the average stock by only {excess:.1f} bps, "
+            f"less than the {d.round_trip_bps:.1f} bps cost."
+        )
+    else:
+        verdict = (
+            f"Top decile beats the average stock by {excess:.1f} bps, {gap:.1f} bps more than costs. "
+            "Promising: backtest it and check the result holds across years."
         )
     lines += ["", f"  verdict: {verdict}"]
     return "\n".join(lines)
