@@ -14,7 +14,7 @@ def build_data(settings: Settings, market: Market) -> DataProvider:
     if kind == "alpaca":
         from tradebot.data.alpaca import AlpacaData
 
-        return AlpacaData(feed=settings.alpaca.feed)
+        return AlpacaData(feed=settings.alpaca.feed, daily_feed=settings.alpaca.daily_feed)
     if kind == "ibkr":
         from tradebot.data.ibkr import IBKRData
 

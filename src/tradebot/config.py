@@ -12,7 +12,8 @@ from pydantic import BaseModel, Field
 
 from tradebot.domain import Market
 
-DEFAULT_CONFIG = Path(__file__).resolve().parents[2] / "config" / "default.yaml"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_CONFIG = REPO_ROOT / "config" / "default.yaml"
 LIVE_CONFIRM_ENV = "TRADEBOT_CONFIRM_LIVE"
 LIVE_CONFIRM_VALUE = "I_UNDERSTAND_THE_RISKS"
 
@@ -34,7 +35,26 @@ class MarketConfig(BaseModel):
     min_bar_dollar_volume: float = 0.0
     holidays: list[date] = Field(default_factory=list)
     universe: list[str] = Field(default_factory=list)
+    daily_universe_file: str | None = None  # one ticker per line; falls back to `universe`
     costs: CostConfig = Field(default_factory=CostConfig)
+
+
+class DailyConfig(BaseModel):
+    """Swing trading on daily bars: decide after the close, fill at the next open."""
+
+    horizon_days: int = 5
+    train_days: int = 504          # ~2 years
+    min_train_days: int = 252
+    retrain_every_days: int = 21   # ~monthly
+    min_train_samples: int = 2000
+    min_prob_up: float = 0.50
+    max_positions: int = 10
+    max_position_pct: float = 0.10
+    max_gross_exposure_pct: float = 1.0
+    stop_loss_pct: float = 0.08
+    take_profit_pct: float | None = None
+    min_edge_bps: float = 10.0
+    min_dollar_volume: float = 1_000_000  # avg daily traded value, local currency
 
 
 class StrategyConfig(BaseModel):
@@ -66,6 +86,7 @@ class RiskConfig(BaseModel):
 
 class AlpacaConfig(BaseModel):
     feed: Literal["iex", "sip"] = "iex"
+    daily_feed: Literal["iex", "sip"] = "sip"  # falls back to iex if the plan doesn't allow it
 
 
 class IBKRConfig(BaseModel):
@@ -82,11 +103,30 @@ class Settings(BaseModel):
     strategy: StrategyConfig = Field(default_factory=StrategyConfig)
     scanner: ScannerConfig = Field(default_factory=ScannerConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
+    daily: DailyConfig = Field(default_factory=DailyConfig)
     alpaca: AlpacaConfig = Field(default_factory=AlpacaConfig)
     ibkr: IBKRConfig = Field(default_factory=IBKRConfig)
 
     def enabled_markets(self) -> list[Market]:
         return [m for m, c in self.markets.items() if c.enabled]
+
+    def universe(self, market: Market, timeframe: str = "intraday") -> list[str]:
+        mcfg = self.markets[market]
+        if timeframe == "daily" and mcfg.daily_universe_file:
+            return read_universe(mcfg.daily_universe_file)
+        return list(mcfg.universe)
+
+
+def read_universe(path: str | Path) -> list[str]:
+    p = Path(path)
+    if not p.is_absolute() and not p.exists():
+        p = REPO_ROOT / p
+    symbols = []
+    for line in p.read_text().splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            symbols.extend(line.split())
+    return list(dict.fromkeys(symbols))  # dedupe, keep order
 
 
 def load_dotenv(path: str | Path = ".env") -> None:

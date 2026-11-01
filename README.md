@@ -41,6 +41,41 @@ tradebot diagnose --markets US --strategy ml --horizon 12   # 60-minute horizon
 - **IC t-stat:** below about 2 in absolute value means the predictions are indistinguishable from noise.
 - **Decile table:** if the top decile's realised return is below the round-trip cost, the edge isn't tradeable at this frequency.
 
+### Results so far (intraday)
+
+US, 20 mega caps, 5-minute bars, 240 out-of-sample days: IC t-stat +0.53, with every decile within ±1 bps against an 8 bps cost. **There is no tradeable intraday signal from generic price and volume features.** This is why the daily track exists.
+
+## Daily / swing track
+
+The same pipeline (walk-forward training, costs, diagnostics) runs on daily bars:
+- Decisions are made after the close and fill at the next open.
+- Positions are held for about `horizon_days` (default 5).
+- Stop-losses are checked at each close, so overnight gaps are real.
+
+```bash
+tradebot fetch --timeframe daily --markets US            # ~10 years, ~120 stocks
+tradebot diagnose --timeframe daily --strategy reversal  # last week's losers bounce?
+tradebot diagnose --timeframe daily --strategy momentum  # 12-1 month momentum
+tradebot diagnose --timeframe daily --strategy ml        # gradient boosting on ranked features
+tradebot backtest --timeframe daily --strategy ml
+tradebot diagnose --timeframe daily --strategy reversal --horizon 10
+```
+
+| Strategy | Idea |
+|---|---|
+| `reversal` | Buy last week's worst performers (short-term reversal) |
+| `momentum` | Buy the strongest 12-month performers, skipping the last month (12-1 momentum) |
+| `ml` | Gradient boosting on cross-sectional percentile ranks of every feature, plus market context |
+
+Rules specific to daily:
+- **Purged training.** A 5-day label from 2 days ago contains prices from 3 days ahead, so `WalkForward` drops any training row whose label ends on or after the trading day.
+- **Overlap-corrected t-stats.** Consecutive days' 5-day labels overlap, which inflates a naive t-stat. `diagnose` applies a Newey-West correction.
+- **Compare against "average stock".** In a rising market, any long-only pick earns the market drift. A signal has to beat that, not just beat zero.
+- **Survivorship bias.** `config/universe_us.txt` lists companies that are large *today*. Backtests over past years therefore miss the companies that shrank or failed, so treat results as optimistic.
+- **Data.** Daily bars use Alpaca's SIP feed where the plan allows it, falling back to IEX, and are adjusted for splits and dividends. The free IEX feed understates volume, which affects the `min_dollar_volume` filter.
+
+There's no earnings data yet, so post-earnings drift isn't covered. Paper trading for the daily track comes after a signal survives the diagnostics.
+
 ## Architecture
 
 | Module | Role |
@@ -48,6 +83,10 @@ tradebot diagnose --markets US --strategy ml --horizon 12   # 60-minute horizon
 | `data/` | `DataProvider` interface; Alpaca (US), IBKR (ASX), synthetic; SQLite `BarStore` |
 | `markets.py` | Session hours and timezones (New York / Sydney, DST-aware) |
 | `features.py` | Returns, volatility, relative volume, VWAP distance, RSI, cross-sectional context; forward-return labels |
+| `daily_features.py` | Daily features: reversal, 12-1 momentum, 52-week high, moving averages, volatility, cross-sectional ranks |
+| `walkforward.py` | Rolling walk-forward training with label purging |
+| `daily_backtest.py` | Multi-day holding backtest: next-open fills, stops, time exits |
+| `research.py` | `diagnose`: walk-forward IC, Newey-West t-stat, decile table vs costs |
 | `scanner.py` | Filters the universe on price, liquidity and relative volume; keeps the top N |
 | `strategy/` | `momentum` baseline (empirically calibrated) and `ml` (gradient-boosted classifier + regressor) |
 | `risk.py` | Sizing, position caps, gross exposure, edge-after-costs gate, stop / take-profit / time exits, end-of-day flatten, daily loss kill switch |

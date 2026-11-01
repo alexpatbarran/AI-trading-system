@@ -16,6 +16,7 @@ markets:
     min_price: 5.0
     min_bar_dollar_volume: 250000 # avg traded value per bar, local currency
     holidays: []                  # YYYY-MM-DD; fill from the exchange calendar
+    daily_universe_file: config/universe_us.txt
     universe: [AAPL, MSFT, NVDA, AMZN, META, GOOGL, TSLA, AMD, AVGO, JPM,
                XOM, UNH, NFLX, COST, CRM, ORCL, INTC, BAC, WMT, PLTR]
     costs:                        # ASSUMPTIONS - check against your broker
@@ -66,8 +67,24 @@ risk:
   no_new_entries_minutes_before_close: 30
   flatten_minutes_before_close: 10
 
+daily:                  # swing trading on daily bars (tradebot ... --timeframe daily)
+  horizon_days: 5       # predict open(t+1) -> close(t+5)
+  train_days: 504       # ~2 years of history per model
+  min_train_days: 252
+  retrain_every_days: 21
+  min_train_samples: 2000
+  min_prob_up: 0.50
+  max_positions: 10
+  max_position_pct: 0.10
+  max_gross_exposure_pct: 1.0
+  stop_loss_pct: 0.08
+  take_profit_pct: null
+  min_edge_bps: 10.0
+  min_dollar_volume: 1000000   # avg daily traded value; IEX volume understates this
+
 alpaca:
-  feed: iex             # iex (free) | sip (paid)
+  feed: iex             # intraday feed: iex (free) | sip (paid for recent data)
+  daily_feed: sip       # free plans can usually query older SIP data; falls back to iex
 
 ibkr:
   host: 127.0.0.1

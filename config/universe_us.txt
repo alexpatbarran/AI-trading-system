@@ -1,0 +1,19 @@
+# US large caps for daily/swing research. One ticker per line or space-separated.
+#
+# WARNING - survivorship bias: this is a list of companies that are large TODAY.
+# Backtesting it over past years quietly excludes companies that shrank, were
+# delisted or went bust, which flatters results. Treat backtests as optimistic.
+# Symbols the data provider doesn't recognise are skipped at fetch time.
+
+AAPL MSFT NVDA AMZN META GOOGL AVGO TSLA JPM LLY
+V UNH XOM MA COST HD PG JNJ WMT NFLX
+ABBV BAC CRM ORCL CVX KO MRK AMD PEP TMO
+ADBE WFC LIN CSCO ACN MCD ABT DIS IBM GE
+QCOM TXN INTU CAT VZ AMGN PFE NOW DHR CMCSA
+ISRG NEE PM SPGI UNP GS RTX LOW HON AMAT
+T BKNG AXP COP MS BLK SYK PLD SCHW LMT
+TJX MDT DE C ADP CB GILD ADI REGN VRTX
+MU LRCX PANW BMY SBUX MDLZ SO CI ZTS DUK
+MO KLAC BSX INTC UPS NKE CL SHW ITW CME
+MCO ICE PYPL USB EOG TGT WM SLB CSX NOC
+FDX EMR GD MMM PNC MAR HCA NSC APD ECL

@@ -2,10 +2,12 @@
 
 A backtest with zero trades can't tell "no signal" apart from "real signal
 that's smaller than costs". This module scores walk-forward predictions on
-EVERY symbol and bar (ignoring the scanner and risk gates):
+EVERY tradeable symbol (ignoring the scanner and position limits):
 
   * Information coefficient (IC): daily rank correlation between predicted and
     realised forward return. |t-stat| above ~2-3 suggests real signal.
+    For multi-day labels, consecutive days' labels overlap, which inflates a
+    naive t-stat, so a Newey-West correction is applied.
   * Decile table: realised return by prediction decile. If the top decile's
     average return is below round-trip costs, the edge can't be traded at this
     frequency, however real it is.
@@ -24,12 +26,14 @@ from tradebot.domain import Market
 from tradebot.features import FEATURES, add_features, add_labels
 from tradebot.markets import regular_session_only
 from tradebot.strategy.base import Strategy
+from tradebot.walkforward import WalkForward
 
 
 @dataclass
 class Diagnosis:
     market: Market
     strategy: str
+    horizon: str
     days: int
     predictions: int
     ic_mean: float
@@ -41,30 +45,41 @@ class Diagnosis:
     def top_decile_bps(self) -> float:
         return float(self.deciles["realised_bps"].iloc[-1]) if len(self.deciles) else float("nan")
 
+    @property
+    def mean_bps(self) -> float:
+        d = self.deciles
+        return float((d["realised_bps"] * d["n"]).sum() / d["n"].sum()) if len(d) else float("nan")
 
-def walk_forward_predictions(settings: Settings, market: Market, strategy: Strategy, bars: pd.DataFrame) -> pd.DataFrame:
-    s = settings.strategy
-    mcfg = settings.markets[market]
-    bars = regular_session_only(bars, market)
-    if mcfg.benchmark:
-        bars = bars[bars["symbol"] != mcfg.benchmark]
-    feats = add_labels(add_features(bars, market), s.horizon_bars)
-    feats = feats.dropna(subset=FEATURES + ["fwd_ret"])
-    days = sorted(feats["session_date"].unique())
-    out, last_fit = [], None
-    for di, day in enumerate(days):
-        if last_fit is None or di - last_fit >= s.retrain_every_days:
-            window = days[max(0, di - s.train_days) : di]
-            if len(window) >= s.min_train_days:
-                train = feats[feats["session_date"].isin(window)]
-                if len(train) >= s.min_train_samples and strategy.fit(train):
-                    last_fit = di
-        if not strategy.fitted:
+    @property
+    def bottom_decile_bps(self) -> float:
+        return float(self.deciles["realised_bps"].iloc[0]) if len(self.deciles) else float("nan")
+
+
+def predict_walk_forward(wf: WalkForward, rows: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Out-of-sample predictions for every day the model is trained. `rows` limits what gets scored."""
+    rows = wf.feats if rows is None else rows
+    rows = rows.dropna(subset=wf.required + ["fwd_ret"])
+    by_day = {d: g for d, g in rows.groupby("session_date")}
+    out = []
+    for di, day in enumerate(wf.days):
+        if not wf.step(di) or day not in by_day:
             continue
-        today = feats[feats["session_date"] == day]
-        pred = strategy.predict(today)
-        out.append(today[["timestamp", "symbol", "session_date", "close", "fwd_ret"]].join(pred))
+        today = by_day[day]
+        out.append(today[["timestamp", "symbol", "session_date", "close", "fwd_ret"]].join(wf.strategy.predict(today)))
     return pd.concat(out, ignore_index=True) if out else pd.DataFrame()
+
+
+def newey_west_tstat(x: pd.Series, lags: int) -> float:
+    x = np.asarray(x, dtype=float)
+    n = len(x)
+    if n < 3:
+        return float("nan")
+    mean = x.mean()
+    e = x - mean
+    s = (e @ e) / n
+    for lag in range(1, min(lags, n - 1) + 1):
+        s += 2 * (1 - lag / (lags + 1)) * (e[lag:] @ e[:-lag]) / n
+    return float(mean / np.sqrt(s / n)) if s > 0 else float("nan")
 
 
 def _rank_corr(a: pd.Series, b: pd.Series) -> float:
@@ -73,54 +88,91 @@ def _rank_corr(a: pd.Series, b: pd.Series) -> float:
     return float(np.corrcoef(a.rank(), b.rank())[0, 1])
 
 
-def diagnose(settings: Settings, market: Market, strategy: Strategy, bars: pd.DataFrame) -> Diagnosis | None:
-    preds = walk_forward_predictions(settings, market, strategy, bars)
+def summarise(
+    preds: pd.DataFrame, market: Market, strategy: str, horizon: str, overlap_lags: int, round_trip_bps: float
+) -> Diagnosis | None:
     if preds.empty:
         return None
     daily_ic = preds.groupby("session_date").apply(
         lambda g: _rank_corr(g["expected_return"], g["fwd_ret"]), include_groups=False
     ).dropna()
-    ic_mean = float(daily_ic.mean()) if len(daily_ic) else np.nan
-    ic_std = float(daily_ic.std()) if len(daily_ic) > 1 else np.nan
-    ic_t = ic_mean / ic_std * np.sqrt(len(daily_ic)) if ic_std and ic_std > 0 else np.nan
-
     ranks = preds["expected_return"].rank(method="first")
-    preds["decile"] = pd.qcut(ranks, 10, labels=False) + 1
+    preds = preds.assign(decile=pd.qcut(ranks, 10, labels=False) + 1)
     deciles = preds.groupby("decile").agg(
         n=("fwd_ret", "size"),
         predicted_bps=("expected_return", lambda x: x.mean() * 1e4),
         realised_bps=("fwd_ret", lambda x: x.mean() * 1e4),
         hit_rate=("fwd_ret", lambda x: (x > 0).mean()),
     )
+    return Diagnosis(
+        market, strategy, horizon, len(daily_ic), len(preds),
+        float(daily_ic.mean()) if len(daily_ic) else np.nan,
+        newey_west_tstat(daily_ic, overlap_lags), deciles, round_trip_bps,
+    )
 
+
+def _round_trip(settings: Settings, market: Market, price: float, position_pct: float) -> float:
     mcfg = settings.markets[market]
-    price = float(preds["close"].median())
-    qty = max(1, int(mcfg.starting_capital * settings.risk.max_position_pct / price))
-    rt = CostModel(mcfg.costs).round_trip_bps(qty, price)
-    return Diagnosis(market, strategy.name, len(daily_ic), len(preds), ic_mean, float(ic_t), deciles, rt)
+    qty = max(1, int(mcfg.starting_capital * position_pct / price))
+    return CostModel(mcfg.costs).round_trip_bps(qty, price)
+
+
+def diagnose(settings: Settings, market: Market, strategy: Strategy, bars: pd.DataFrame) -> Diagnosis | None:
+    """Intraday diagnostics."""
+    s = settings.strategy
+    mcfg = settings.markets[market]
+    bars = regular_session_only(bars, market)
+    if mcfg.benchmark:
+        bars = bars[bars["symbol"] != mcfg.benchmark]
+    feats = add_labels(add_features(bars, market), s.horizon_bars)
+    wf = WalkForward(feats, strategy, FEATURES, s.train_days, s.min_train_days, s.retrain_every_days, s.min_train_samples)
+    preds = predict_walk_forward(wf)
+    if preds.empty:
+        return None
+    rt = _round_trip(settings, market, float(preds["close"].median()), settings.risk.max_position_pct)
+    horizon = f"{s.horizon_bars * settings.bar_minutes} min"
+    return summarise(preds, market, strategy.name, horizon, 0, rt)
+
+
+def diagnose_daily(settings: Settings, market: Market, strategy: Strategy, bars: pd.DataFrame) -> Diagnosis | None:
+    from tradebot.daily_backtest import daily_feature_frame, make_walk_forward, tradeable
+
+    feats = daily_feature_frame(settings, market, bars)
+    wf = make_walk_forward(settings, feats, strategy)
+    preds = predict_walk_forward(wf, tradeable(feats, settings, market))
+    if preds.empty:
+        return None
+    h = settings.daily.horizon_days
+    rt = _round_trip(settings, market, float(preds["close"].median()), settings.daily.max_position_pct)
+    return summarise(preds, market, strategy.name, f"{h} days", h - 1, rt)
 
 
 def format_diagnosis(d: Diagnosis) -> str:
     lines = [
-        f"\n=== {d.market.value} | strategy={d.strategy} | signal diagnostics ===",
+        f"\n=== {d.market.value} | strategy={d.strategy} | horizon={d.horizon} | signal diagnostics ===",
         f"  out-of-sample days       {d.days}",
         f"  predictions scored       {d.predictions}",
         f"  mean daily IC            {d.ic_mean:+.4f}",
         f"  IC t-stat                {d.ic_tstat:+.2f}   (|t| < 2: indistinguishable from noise)",
         f"  round-trip cost          {d.round_trip_bps:.1f} bps  (typical position)",
+        f"  average stock            {d.mean_bps:.1f} bps  (what random picks earned over the horizon)",
         "",
-        "  decile  predicted_bps  realised_bps  hit_rate       n",
+        "  decile  predicted_bps  realised_bps  hit_rate        n",
     ]
     for dec, r in d.deciles.iterrows():
-        lines.append(f"  {dec:>6}  {r.predicted_bps:>13.1f}  {r.realised_bps:>12.1f}  {r.hit_rate:>8.1%}  {int(r.n):>6}")
+        lines.append(f"  {dec:>6}  {r.predicted_bps:>13.1f}  {r.realised_bps:>12.1f}  {r.hit_rate:>8.1%}  {int(r.n):>7}")
     gap = d.top_decile_bps - d.round_trip_bps
     if not np.isfinite(d.ic_tstat) or abs(d.ic_tstat) < 2:
         verdict = "No reliable signal. Change features, horizon or universe before tuning anything else."
     elif d.ic_mean <= 0:
-        verdict = "Signal is reliably WRONG (negative IC). Check for a bug, or the effect may be mean reversion."
+        verdict = "Signal is reliably WRONG (negative IC). Check for a bug, or flip the rule."
     elif gap < 0:
-        verdict = f"Real signal, but the top decile is {abs(gap):.1f} bps short of covering costs. Try a longer horizon or cheaper execution."
+        verdict = f"Real signal, but the top decile is {abs(gap):.1f} bps short of covering costs."
     else:
-        verdict = f"Top decile beats costs by {gap:.1f} bps. Promising: confirm on more data before paper trading."
+        spread = d.top_decile_bps - d.bottom_decile_bps
+        verdict = (
+            f"Top decile beats costs by {gap:.1f} bps (top-bottom spread {spread:.1f} bps). "
+            "Check it against simply holding the universe before trusting it."
+        )
     lines += ["", f"  verdict: {verdict}"]
     return "\n".join(lines)

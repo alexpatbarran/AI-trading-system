@@ -4,7 +4,10 @@
   tradebot backtest --synthetic --momentum 0.1  # with a planted edge (sanity check)
   tradebot fetch --days 60                      # download bars into the local store
   tradebot backtest                             # backtest on stored real data
-  tradebot paper                                # run against paper accounts
+  tradebot diagnose                             # does the model predict anything?
+  tradebot fetch --timeframe daily              # ~10 years of daily bars
+  tradebot diagnose --timeframe daily --strategy reversal
+  tradebot paper                                # run against paper accounts (intraday)
   tradebot live                                 # real money; needs explicit confirmation
 """
 
@@ -19,7 +22,7 @@ from pathlib import Path
 from tradebot.backtest import Backtester, BacktestResult
 from tradebot.config import Settings, assert_live_allowed, load_settings
 from tradebot.domain import Market
-from tradebot.strategy import make_strategy
+from tradebot.strategy import DAILY_STRATEGIES, INTRADAY_STRATEGIES, make_daily_strategy, make_strategy
 
 
 def _markets(settings: Settings, names: list[str] | None) -> list[Market]:
@@ -34,8 +37,9 @@ def _print_result(r: BacktestResult) -> None:
         return
     for k in ["total_return", "max_drawdown", "win_rate", "avg_trade_return", "costs_pct_of_capital"]:
         print(f"  {k:24s} {m[k]:+.2%}")
-    for k in ["sharpe_annualised", "profit_factor", "trades", "trades_per_day", "final_equity"]:
-        print(f"  {k:24s} {m[k]:.2f}")
+    for k in ["sharpe_annualised", "profit_factor", "trades", "trades_per_day", "avg_holding_days", "final_equity"]:
+        if k in m:
+            print(f"  {k:24s} {m[k]:.2f}")
     if r.universe_buy_hold is not None:
         print(f"  {'universe_buy_hold':24s} {r.universe_buy_hold:+.2%}")
     if r.benchmark_buy_hold is not None:
@@ -44,45 +48,80 @@ def _print_result(r: BacktestResult) -> None:
         print(f"  risk rejections: {r.risk_rejections}")
 
 
+DAILY = 1440  # bar size key used for daily bars in the store
+
+
+def _daily(args) -> bool:
+    return getattr(args, "timeframe", "intraday") == "daily"
+
+
+def _symbols(settings: Settings, market: Market, daily: bool) -> list[str]:
+    mcfg = settings.markets[market]
+    symbols = settings.universe(market, "daily" if daily else "intraday")
+    return symbols + ([mcfg.benchmark] if mcfg.benchmark and mcfg.benchmark not in symbols else [])
+
+
 def _load_bars(args, settings: Settings, market: Market):
     mcfg = settings.markets[market]
-    symbols = mcfg.universe + ([mcfg.benchmark] if mcfg.benchmark else [])
+    daily = _daily(args)
+    symbols = _symbols(settings, market, daily)
     if args.synthetic:
-        from tradebot.data.synthetic import generate_bars, trading_days
+        from tradebot.data.synthetic import generate_bars, generate_daily_bars, trading_days
 
+        n_days = args.days or (1500 if daily else 60)
         end = datetime.now(timezone.utc).date() - timedelta(days=1)
-        days = trading_days(market, end, args.days, set(mcfg.holidays))
+        days = trading_days(market, end, n_days, set(mcfg.holidays))
+        if daily:
+            return generate_daily_bars(market, symbols, days, momentum=args.momentum, seed=args.seed)
         return generate_bars(market, symbols, days, settings.bar_minutes, momentum=args.momentum, seed=args.seed)
     from tradebot.data.store import BarStore
 
-    bars = BarStore(settings.db_path).load(market, settings.bar_minutes, symbols)
+    bar_key = DAILY if daily else settings.bar_minutes
+    bars = BarStore(settings.db_path).load(market, bar_key, symbols)
     if bars.empty:
-        print(f"No stored bars for {market.value}. Run `tradebot fetch` first or use --synthetic.")
+        tf = " --timeframe daily" if daily else ""
+        print(f"No stored bars for {market.value}. Run `tradebot fetch{tf}` first or use --synthetic.")
         return None
     return bars
 
 
 def _apply_overrides(args, settings: Settings) -> None:
-    if args.strategy:
+    daily = _daily(args)
+    valid = DAILY_STRATEGIES if daily else INTRADAY_STRATEGIES
+    if args.strategy and args.strategy not in valid:
+        raise SystemExit(f"--strategy {args.strategy} isn't available for this timeframe; choose from {valid}")
+    if args.strategy and not daily:
         settings.strategy.name = args.strategy
     if args.horizon:
-        settings.strategy.horizon_bars = args.horizon
+        if daily:
+            settings.daily.horizon_days = args.horizon
+        else:
+            settings.strategy.horizon_bars = args.horizon
+
+
+def _make(args, settings: Settings):
+    if _daily(args):
+        return make_daily_strategy(args.strategy or "ml", seed=args.seed)
+    return make_strategy(settings.strategy, seed=args.seed)
 
 
 def cmd_diagnose(args, settings: Settings) -> int:
-    from tradebot.research import diagnose, format_diagnosis
+    from tradebot.research import diagnose, diagnose_daily, format_diagnosis
 
     _apply_overrides(args, settings)
+    fn = diagnose_daily if _daily(args) else diagnose
     for market in _markets(settings, args.markets):
         bars = _load_bars(args, settings, market)
         if bars is None:
             continue
-        d = diagnose(settings, market, make_strategy(settings.strategy, seed=args.seed), bars)
+        d = fn(settings, market, _make(args, settings), bars)
         print(format_diagnosis(d) if d else f"\n{market.value}: not enough data to train")
     return 0
 
 
 def cmd_backtest(args, settings: Settings) -> int:
+    from tradebot.daily_backtest import DailyBacktester
+
     _apply_overrides(args, settings)
     out = Path("reports")
     out.mkdir(exist_ok=True)
@@ -90,9 +129,10 @@ def cmd_backtest(args, settings: Settings) -> int:
         bars = _load_bars(args, settings, market)
         if bars is None:
             continue
-        result = Backtester(settings, market, make_strategy(settings.strategy, seed=args.seed)).run(bars)
+        cls = DailyBacktester if _daily(args) else Backtester
+        result = cls(settings, market, _make(args, settings)).run(bars)
         _print_result(result)
-        tag = f"{market.value}_{result.strategy}"
+        tag = f"{market.value}_{'daily_' if _daily(args) else ''}{result.strategy.split(' ')[0]}"
         result.equity.to_csv(out / f"equity_{tag}.csv")
         result.trades.to_csv(out / f"trades_{tag}.csv", index=False)
     return 0
@@ -102,15 +142,21 @@ def cmd_fetch(args, settings: Settings) -> int:
     from tradebot.data.store import BarStore
     from tradebot.wiring import build_data
 
+    daily = _daily(args)
     store = BarStore(settings.db_path)
     end = datetime.now(timezone.utc)
-    start = end - timedelta(days=args.days)
+    start = end - timedelta(days=args.days or (3650 if daily else 60))
+    bar_key = DAILY if daily else settings.bar_minutes
     for market in _markets(settings, args.markets):
-        mcfg = settings.markets[market]
-        symbols = mcfg.universe + ([mcfg.benchmark] if mcfg.benchmark else [])
-        bars = build_data(settings, market).get_bars(symbols, start, end, settings.bar_minutes)
-        n = store.save(market, settings.bar_minutes, bars)
-        print(f"{market.value}: stored {n} bars for {bars['symbol'].nunique() if n else 0} symbols")
+        symbols = _symbols(settings, market, daily)
+        print(f"{market.value}: fetching {len(symbols)} symbols ({'daily' if daily else f'{bar_key}-min'} bars)...")
+        bars = build_data(settings, market).get_bars(symbols, start, end, bar_key)
+        n = store.save(market, bar_key, bars)
+        got = bars["symbol"].nunique() if n else 0
+        print(f"{market.value}: stored {n} bars for {got}/{len(symbols)} symbols")
+        missing = sorted(set(symbols) - set(bars["symbol"])) if n else symbols
+        if missing:
+            print(f"  missing: {' '.join(missing)}")
     return 0
 
 
@@ -144,16 +190,21 @@ def main(argv: list[str] | None = None) -> int:
 
     for name, help_ in (("backtest", "walk-forward backtest"), ("diagnose", "does the model predict anything?")):
         b = sub.add_parser(name, help=help_)
+        b.add_argument("--timeframe", choices=["intraday", "daily"], default="intraday")
         b.add_argument("--synthetic", action="store_true", help="use generated data (no API keys)")
-        b.add_argument("--days", type=int, default=60, help="synthetic trading days")
-        b.add_argument("--momentum", type=float, default=0.0, help="planted autocorrelation for synthetic data")
-        b.add_argument("--strategy", choices=["momentum", "ml"])
-        b.add_argument("--horizon", type=int, help="override strategy.horizon_bars")
+        b.add_argument("--days", type=int, help="synthetic trading days (default 60 intraday / 1500 daily)")
+        b.add_argument(
+            "--momentum", type=float, default=0.0,
+            help="planted autocorrelation for synthetic data (negative = reversal)",
+        )
+        b.add_argument("--strategy", choices=sorted(set(INTRADAY_STRATEGIES + DAILY_STRATEGIES)))
+        b.add_argument("--horizon", type=int, help="bars (intraday) or days (daily) to hold/predict")
         b.add_argument("--markets", nargs="+", choices=["US", "ASX"])
         b.add_argument("--seed", type=int, default=0)
 
     f = sub.add_parser("fetch", help="download historical bars into the local store")
-    f.add_argument("--days", type=int, default=60)
+    f.add_argument("--timeframe", choices=["intraday", "daily"], default="intraday")
+    f.add_argument("--days", type=int, help="calendar days of history (default 60 intraday / 3650 daily)")
     f.add_argument("--markets", nargs="+", choices=["US", "ASX"])
 
     for name in ("paper", "live"):
