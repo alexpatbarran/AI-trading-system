@@ -66,6 +66,17 @@ def minutes_to_close(market: Market, now: datetime) -> float:
     return (c - now).total_seconds() / 60.0
 
 
+def regular_session_only(bars, market: Market):
+    """Drop pre-market, after-hours and auction bars (Alpaca returns extended hours by default)."""
+    if bars.empty:
+        return bars
+    s = SESSIONS[market]
+    local = bars["timestamp"].dt.tz_convert(s.tz)
+    t = local.dt.time
+    mask = (t >= s.open) & (t < s.close) & (local.dt.weekday < 5)
+    return bars[mask].reset_index(drop=True)
+
+
 def next_open(market: Market, now: datetime, holidays: set[date] | None = None) -> datetime:
     now = _as_utc(now)
     day = local_date(market, now)

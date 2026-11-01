@@ -18,7 +18,7 @@ from tradebot.costs import CostModel
 from tradebot.domain import Market, Signal
 from tradebot.execution.sim import SimBroker
 from tradebot.features import FEATURES, add_features, add_labels
-from tradebot.markets import SESSIONS
+from tradebot.markets import SESSIONS, regular_session_only
 from tradebot.metrics import buy_and_hold_return, compute_metrics
 from tradebot.risk import RiskManager
 from tradebot.scanner import scan
@@ -54,6 +54,7 @@ class Backtester:
             s.risk, self.market, costs, s.strategy.horizon_bars, s.bar_minutes, s.strategy.min_prob_up
         )
 
+        bars = regular_session_only(bars, self.market)
         benchmark = mcfg.benchmark
         trade_bars = bars[bars["symbol"] != benchmark] if benchmark else bars
         feats = add_labels(add_features(trade_bars, self.market), s.strategy.horizon_bars)

@@ -44,27 +44,52 @@ def _print_result(r: BacktestResult) -> None:
         print(f"  risk rejections: {r.risk_rejections}")
 
 
-def cmd_backtest(args, settings: Settings) -> int:
+def _load_bars(args, settings: Settings, market: Market):
+    mcfg = settings.markets[market]
+    symbols = mcfg.universe + ([mcfg.benchmark] if mcfg.benchmark else [])
+    if args.synthetic:
+        from tradebot.data.synthetic import generate_bars, trading_days
+
+        end = datetime.now(timezone.utc).date() - timedelta(days=1)
+        days = trading_days(market, end, args.days, set(mcfg.holidays))
+        return generate_bars(market, symbols, days, settings.bar_minutes, momentum=args.momentum, seed=args.seed)
+    from tradebot.data.store import BarStore
+
+    bars = BarStore(settings.db_path).load(market, settings.bar_minutes, symbols)
+    if bars.empty:
+        print(f"No stored bars for {market.value}. Run `tradebot fetch` first or use --synthetic.")
+        return None
+    return bars
+
+
+def _apply_overrides(args, settings: Settings) -> None:
     if args.strategy:
         settings.strategy.name = args.strategy
+    if args.horizon:
+        settings.strategy.horizon_bars = args.horizon
+
+
+def cmd_diagnose(args, settings: Settings) -> int:
+    from tradebot.research import diagnose, format_diagnosis
+
+    _apply_overrides(args, settings)
+    for market in _markets(settings, args.markets):
+        bars = _load_bars(args, settings, market)
+        if bars is None:
+            continue
+        d = diagnose(settings, market, make_strategy(settings.strategy, seed=args.seed), bars)
+        print(format_diagnosis(d) if d else f"\n{market.value}: not enough data to train")
+    return 0
+
+
+def cmd_backtest(args, settings: Settings) -> int:
+    _apply_overrides(args, settings)
     out = Path("reports")
     out.mkdir(exist_ok=True)
     for market in _markets(settings, args.markets):
-        mcfg = settings.markets[market]
-        symbols = mcfg.universe + ([mcfg.benchmark] if mcfg.benchmark else [])
-        if args.synthetic:
-            from tradebot.data.synthetic import generate_bars, trading_days
-
-            end = datetime.now(timezone.utc).date() - timedelta(days=1)
-            days = trading_days(market, end, args.days, set(mcfg.holidays))
-            bars = generate_bars(market, symbols, days, settings.bar_minutes, momentum=args.momentum, seed=args.seed)
-        else:
-            from tradebot.data.store import BarStore
-
-            bars = BarStore(settings.db_path).load(market, settings.bar_minutes, symbols)
-            if bars.empty:
-                print(f"No stored bars for {market.value}. Run `tradebot fetch` first or use --synthetic.")
-                continue
+        bars = _load_bars(args, settings, market)
+        if bars is None:
+            continue
         result = Backtester(settings, market, make_strategy(settings.strategy, seed=args.seed)).run(bars)
         _print_result(result)
         tag = f"{market.value}_{result.strategy}"
@@ -117,13 +142,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    b = sub.add_parser("backtest", help="walk-forward backtest")
-    b.add_argument("--synthetic", action="store_true", help="use generated data (no API keys)")
-    b.add_argument("--days", type=int, default=60, help="synthetic trading days")
-    b.add_argument("--momentum", type=float, default=0.0, help="planted autocorrelation for synthetic data")
-    b.add_argument("--strategy", choices=["momentum", "ml"])
-    b.add_argument("--markets", nargs="+", choices=["US", "ASX"])
-    b.add_argument("--seed", type=int, default=0)
+    for name, help_ in (("backtest", "walk-forward backtest"), ("diagnose", "does the model predict anything?")):
+        b = sub.add_parser(name, help=help_)
+        b.add_argument("--synthetic", action="store_true", help="use generated data (no API keys)")
+        b.add_argument("--days", type=int, default=60, help="synthetic trading days")
+        b.add_argument("--momentum", type=float, default=0.0, help="planted autocorrelation for synthetic data")
+        b.add_argument("--strategy", choices=["momentum", "ml"])
+        b.add_argument("--horizon", type=int, help="override strategy.horizon_bars")
+        b.add_argument("--markets", nargs="+", choices=["US", "ASX"])
+        b.add_argument("--seed", type=int, default=0)
 
     f = sub.add_parser("fetch", help="download historical bars into the local store")
     f.add_argument("--days", type=int, default=60)
@@ -141,6 +168,8 @@ def main(argv: list[str] | None = None) -> int:
     settings = load_settings(args.config)
     if args.cmd == "backtest":
         return cmd_backtest(args, settings)
+    if args.cmd == "diagnose":
+        return cmd_diagnose(args, settings)
     if args.cmd == "fetch":
         return cmd_fetch(args, settings)
     return cmd_run(args, settings, live=args.cmd == "live")

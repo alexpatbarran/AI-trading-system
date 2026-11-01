@@ -13,7 +13,7 @@ from tradebot.domain import Market, Side, Signal
 from tradebot.execution.base import Broker
 from tradebot.features import FEATURES, add_features, add_labels
 from tradebot.journal import Journal
-from tradebot.markets import is_open, local_date, session_bounds
+from tradebot.markets import is_open, local_date, regular_session_only, session_bounds
 from tradebot.risk import RiskManager
 from tradebot.scanner import scan
 from tradebot.strategy.base import Strategy
@@ -81,6 +81,7 @@ class MarketRunner:
         open_today, _ = session_bounds(self.market, self.trading_day)
         lookback = timedelta(days=int(self.s.strategy.train_days * 1.5) + 4)
         hist = self.data.get_bars(self.mcfg.universe, open_today - lookback, open_today, self.s.bar_minutes)
+        hist = regular_session_only(hist, self.market)
         if hist.empty:
             log.warning("[%s] no history for training", self.market.value)
             return
@@ -104,7 +105,7 @@ class MarketRunner:
         self.last_decision = decision_close
 
         bars = self.data.get_bars(self.mcfg.universe, now - timedelta(days=4), now, self.s.bar_minutes)
-        bars = drop_incomplete_bars(bars, now, self.s.bar_minutes)
+        bars = drop_incomplete_bars(regular_session_only(bars, self.market), now, self.s.bar_minutes)
         if bars.empty:
             log.warning("[%s] no bars", self.market.value)
             return

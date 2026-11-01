@@ -29,6 +29,18 @@ tradebot backtest --synthetic --strategy ml --momentum 0.4
 
 Equity curves and trade logs are written to `reports/`.
 
+### Diagnose before you tune
+
+A backtest with zero trades can't tell "no signal" apart from "real signal smaller than costs". `diagnose` scores the walk-forward predictions on every bar:
+
+```bash
+tradebot diagnose --markets US --strategy ml
+tradebot diagnose --markets US --strategy ml --horizon 12   # 60-minute horizon
+```
+
+- **IC t-stat:** below about 2 in absolute value means the predictions are indistinguishable from noise.
+- **Decile table:** if the top decile's realised return is below the round-trip cost, the edge isn't tradeable at this frequency.
+
 ## Architecture
 
 | Module | Role |
