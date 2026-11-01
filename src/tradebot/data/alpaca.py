@@ -14,6 +14,7 @@ from tradebot.domain import Market
 log = logging.getLogger("tradebot.data.alpaca")
 
 DAILY = 1440
+MONTHLY = 43200  # pseudo bar size for monthly bars (used by the universe builder)
 CHUNK = 50
 
 
@@ -37,10 +38,13 @@ class AlpacaData(DataProvider):
         )
 
     def get_bars(self, symbols: list[str], start: datetime, end: datetime, bar_minutes: int) -> pd.DataFrame:
-        feed = self.daily_feed if bar_minutes == DAILY else self.feed
         frames = []
-        for i in range(0, len(symbols), CHUNK):
+        n_chunks = (len(symbols) + CHUNK - 1) // CHUNK
+        for k, i in enumerate(range(0, len(symbols), CHUNK)):
+            feed = self.daily_feed if bar_minutes >= DAILY else self.feed  # re-read: may fall back to IEX
             frames.append(self._fetch_chunk(list(symbols[i : i + CHUNK]), start, end, bar_minutes, feed))
+            if n_chunks > 4:
+                log.info("fetched %d/%d symbol chunks", k + 1, n_chunks)
         frames = [f for f in frames if not f.empty]
         return normalise_bars(pd.concat(frames, ignore_index=True) if frames else pd.DataFrame())
 
@@ -51,7 +55,7 @@ class AlpacaData(DataProvider):
             msg = str(exc).lower()
             if feed == "sip" and ("subscription" in msg or "permit" in msg):
                 log.warning("SIP data not available on this plan (%s); falling back to IEX", exc)
-                if bar_minutes == DAILY:
+                if bar_minutes >= DAILY:
                     self.daily_feed = "iex"
                 else:
                     self.feed = "iex"
@@ -71,10 +75,16 @@ class AlpacaData(DataProvider):
 
         if feed == "sip":  # free plans can't query the most recent 15 minutes of SIP data
             end = min(end, datetime.now(timezone.utc) - timedelta(minutes=16))
-        daily = bar_minutes == DAILY
+        daily = bar_minutes >= DAILY
+        if bar_minutes == MONTHLY:
+            timeframe = TimeFrame.Month
+        elif bar_minutes == DAILY:
+            timeframe = TimeFrame.Day
+        else:
+            timeframe = TimeFrame(bar_minutes, TimeFrameUnit.Minute)
         req = StockBarsRequest(
             symbol_or_symbols=symbols,
-            timeframe=TimeFrame.Day if daily else TimeFrame(bar_minutes, TimeFrameUnit.Minute),
+            timeframe=timeframe,
             start=start,
             end=end,
             feed=DataFeed(feed),

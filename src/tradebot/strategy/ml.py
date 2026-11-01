@@ -17,9 +17,11 @@ from tradebot.strategy.base import Strategy
 class MLStrategy(Strategy):
     name = "ml"
 
-    def __init__(self, features: list[str] | None = None, seed: int = 0):
+    def __init__(self, features: list[str] | None = None, seed: int = 0, max_train_rows: int = 300_000):
         super().__init__()
         self.features = features or FEATURES
+        self.seed = seed
+        self.max_train_rows = max_train_rows
         params = dict(
             max_depth=3,
             learning_rate=0.05,
@@ -35,6 +37,8 @@ class MLStrategy(Strategy):
         data = train.dropna(subset=self.features + ["fwd_ret"])
         if len(data) < 1000:
             return False
+        if len(data) > self.max_train_rows:  # keeps broad-universe training fast
+            data = data.sample(self.max_train_rows, random_state=self.seed)
         X = data[self.features].to_numpy()
         y = data["fwd_ret"].to_numpy()
         up = (y > 0).astype(int)

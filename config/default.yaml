@@ -17,6 +17,7 @@ markets:
     min_bar_dollar_volume: 250000 # avg traded value per bar, local currency
     holidays: []                  # YYYY-MM-DD; fill from the exchange calendar
     daily_universe_file: config/universe_us.txt
+    broad_universe_file: config/universe_us_broad.txt   # created by `tradebot build-universe`
     universe: [AAPL, MSFT, NVDA, AMZN, META, GOOGL, TSLA, AMD, AVGO, JPM,
                XOM, UNH, NFLX, COST, CRM, ORCL, INTC, BAC, WMT, PLTR]
     costs:                        # ASSUMPTIONS - check against your broker
@@ -25,6 +26,12 @@ markets:
       min_commission: 0.0
       spread_bps: 2.0             # full quoted spread; half is paid per side
       slippage_bps: 3.0           # per side, on top of half-spread
+      spread_tiers:               # daily track: [min avg daily $ volume, full spread bps]
+        - [500000000, 2]          # mega caps
+        - [100000000, 4]
+        - [20000000, 10]
+        - [5000000, 20]
+        - [0, 40]                 # thinly traded small caps
 
   ASX:
     enabled: true
@@ -81,6 +88,9 @@ daily:                  # swing trading on daily bars (tradebot ... --timeframe 
   take_profit_pct: null
   min_edge_bps: 10.0
   min_dollar_volume: 1000000   # avg daily traded value; IEX volume understates this
+  min_price: 5.0
+  # size bands (--size large|mid|small) rank stocks by traded value each day:
+  #   large = top 200, mid = 201-800, small = 801+
 
 alpaca:
   feed: iex             # intraday feed: iex (free) | sip (paid for recent data)

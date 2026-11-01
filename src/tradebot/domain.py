@@ -44,6 +44,7 @@ class Order:
     timestamp: datetime
     reason: str = ""
     id: str = field(default_factory=lambda: uuid4().hex[:12])
+    spread_bps: float | None = None  # per-stock spread estimate (simulation only)
 
 
 @dataclass(frozen=True)

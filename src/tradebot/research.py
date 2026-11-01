@@ -65,7 +65,9 @@ def predict_walk_forward(wf: WalkForward, rows: pd.DataFrame | None = None) -> p
         if not wf.step(di) or day not in by_day:
             continue
         today = by_day[day]
-        out.append(today[["timestamp", "symbol", "session_date", "close", "fwd_ret"]].join(wf.strategy.predict(today)))
+        cols = ["timestamp", "symbol", "session_date", "close", "fwd_ret"]
+        cols += [c for c in ("avg_dollar_volume",) if c in today.columns]
+        out.append(today[cols].join(wf.strategy.predict(today)))
     return pd.concat(out, ignore_index=True) if out else pd.DataFrame()
 
 
@@ -109,6 +111,8 @@ def summarise(
         realised_bps=("fwd_ret", lambda x: x.mean() * 1e4),
         hit_rate=("fwd_ret", lambda x: (x > 0).mean()),
     )
+    if "cost_bps" in preds.columns:  # per-stock costs: what it costs to trade the model's favourites
+        round_trip_bps = float(preds.loc[preds["decile"] == 10, "cost_bps"].mean())
     return Diagnosis(
         market, strategy, horizon, len(daily_ic), len(preds),
         float(daily_ic.mean()) if len(daily_ic) else np.nan,
@@ -139,16 +143,23 @@ def diagnose(settings: Settings, market: Market, strategy: Strategy, bars: pd.Da
     return summarise(preds, market, strategy.name, horizon, 0, rt)
 
 
-def diagnose_daily(settings: Settings, market: Market, strategy: Strategy, bars: pd.DataFrame) -> Diagnosis | None:
-    from tradebot.daily_backtest import daily_feature_frame, make_walk_forward, tradeable
+def diagnose_daily(
+    settings: Settings, market: Market, strategy: Strategy, bars: pd.DataFrame, news: pd.DataFrame | None = None
+) -> Diagnosis | None:
+    from tradebot.daily_backtest import daily_feature_frame, make_walk_forward, required_features, tradeable
 
-    feats = daily_feature_frame(settings, market, bars)
-    wf = make_walk_forward(settings, feats, strategy)
-    preds = predict_walk_forward(wf, tradeable(feats, settings, market))
+    feats = tradeable(daily_feature_frame(settings, market, bars, news), settings, market)
+    wf = make_walk_forward(settings, feats, strategy, required_features(news))
+    preds = predict_walk_forward(wf)
     if preds.empty:
         return None
     h = settings.daily.horizon_days
     rt = _round_trip(settings, market, float(preds["close"].median()), settings.daily.max_position_pct)
+    costs = CostModel(settings.markets[market].costs)
+    if costs.cfg.spread_tiers:
+        rt_median_price = rt - 2 * costs.per_side()  # commission part for a typical position
+        spreads = preds["avg_dollar_volume"].map(costs.spread_for)
+        preds = preds.assign(cost_bps=rt_median_price + 2 * (spreads / 2 + costs.cfg.slippage_bps))
     return summarise(preds, market, strategy.name, f"{h} days", h - 1, rt)
 
 
@@ -159,7 +170,7 @@ def format_diagnosis(d: Diagnosis) -> str:
         f"  predictions scored       {d.predictions}",
         f"  mean cross-sectional IC  {d.ic_mean:+.4f}",
         f"  IC t-stat                {d.ic_tstat:+.2f}   (|t| < 2: indistinguishable from noise)",
-        f"  round-trip cost          {d.round_trip_bps:.1f} bps  (typical position)",
+        f"  round-trip cost          {d.round_trip_bps:.1f} bps  (for the model's top-decile picks)",
         f"  average stock            {d.mean_bps:.1f} bps  (what random picks earned over the horizon)",
         "",
         "  decile = rank of the prediction among stocks at the same time (10 = model's favourites)",

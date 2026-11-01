@@ -67,7 +67,7 @@ class SimBroker(Broker):
 
     # --- internals ----------------------------------------------------------
     def _execute(self, o: Order, ref_price: float, ts: datetime) -> None:
-        price = self.costs.fill_price(o.side, ref_price)
+        price = self.costs.fill_price(o.side, ref_price, o.spread_bps)
         if o.side == Side.BUY:
             qty = o.qty
             commission = self.costs.commission(qty, price)

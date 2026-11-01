@@ -85,8 +85,15 @@ def add_daily_features(bars: pd.DataFrame, market: Market) -> pd.DataFrame:
     df["excess_ret_21d"] = df["ret_21d"] - df["market_ret_21d"]
     for f in CS_FEATURES:
         df[f"cs_{f}"] = by_day[f].rank(pct=True)
+    # 1 = most traded stock that day (point-in-time size proxy)
+    df["size_rank"] = by_day["avg_dollar_volume"].rank(ascending=False, method="first")
 
-    return df.drop(columns=["_gain", "_loss"])
+    df = df.drop(columns=["_gain", "_loss"])
+    # float32 halves memory for broad universes (millions of rows)
+    skip = {"open", "high", "low", "close", "volume"}
+    floats = [c for c in df.columns if df[c].dtype == "float64" and c not in skip]
+    df[floats] = df[floats].astype("float32")
+    return df
 
 
 def add_daily_labels(df: pd.DataFrame, horizon_days: int) -> pd.DataFrame:

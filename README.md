@@ -74,7 +74,55 @@ Rules specific to daily:
 - **Survivorship bias.** `config/universe_us.txt` lists companies that are large *today*. Backtests over past years therefore miss the companies that shrank or failed, so treat results as optimistic.
 - **Data.** Daily bars use Alpaca's SIP feed where the plan allows it, falling back to IEX, and are adjusted for splits and dividends. The free IEX feed understates volume, which affects the `min_dollar_volume` filter.
 
-There's no earnings data yet, so post-earnings drift isn't covered. Paper trading for the daily track comes after a signal survives the diagnostics.
+Paper trading for the daily track comes after a signal survives the diagnostics.
+
+### Results so far (daily, US large caps)
+
+There is no cross-sectional signal at any horizon tested, across ~1,970-2,000 out-of-sample days:
+
+| Strategy | Horizon | IC t-stat |
+|---|---|---|
+| reversal | 5d | −0.19 |
+| momentum 12-1 | 5d | −0.06 |
+| ml | 5d | −0.47 |
+| momentum 12-1 | 21d | −1.25 |
+| reversal | 21d | +0.83 |
+
+### Broader universe: smaller stocks, less survivorship bias
+
+```bash
+tradebot build-universe                                   # ~1,500+ US stocks incl. delisted ones
+tradebot fetch --timeframe daily --universe broad --days 2200
+tradebot diagnose --timeframe daily --universe broad --size small --strategy reversal
+tradebot diagnose --timeframe daily --universe broad --size mid --strategy ml
+```
+
+How the broad universe works:
+- **Building it.** `build-universe` lists every US stock Alpaca knows, *including delisted ones*. It drops ETFs, warrants, units and SPACs, then keeps any stock that ranked in the top 1,500 by traded value in at least 3 months of the last 6 years. A company that was liquid in 2021 and failed in 2023 stays in.
+- **Size bands.** `--size large|mid|small` ranks stocks by traded value each day, point-in-time:
+  - large: top 200
+  - mid: 201-800
+  - small: 801 and below
+- **Training per band.** Models train only on the stocks they could trade.
+- **Costs scale with liquidity.** Spreads are tiered by average daily traded value, from 2 bps for mega caps to 40 bps for thin small caps (`spread_tiers` in the config, all assumptions). `diagnose` charges the model's top-decile picks their own tier.
+
+### News features
+
+```bash
+tradebot fetch-news                                       # ~5 years of headlines; resumable
+tradebot diagnose --timeframe daily --news --strategy news
+tradebot diagnose --timeframe daily --news --strategy ml
+```
+
+What the news pipeline does:
+- **Source.** Headlines come from Alpaca's news API (the Benzinga feed).
+- **Timing.** An article counts for day *d* only if it was published by *d*'s close. After-hours news belongs to the next day. Because the label starts at the next open, the overnight jump is *not* captured, only the drift that continues after the open.
+- **Features:**
+  - attention: article count, and the 5-day count versus its own 60-day norm
+  - a transparent keyword-based headline sentiment score
+  - events scored +1/−1 by regex: upgrades/downgrades, price-target changes, earnings beats/misses, guidance raises/cuts
+- **Noise control.** Market-wrap articles tagged with many tickers are down-weighted.
+- **Coverage.** Rows before news coverage (plus a 60-day warm-up) are excluded rather than treated as "no news".
 
 ## Architecture
 
@@ -86,7 +134,9 @@ There's no earnings data yet, so post-earnings drift isn't covered. Paper tradin
 | `daily_features.py` | Daily features: reversal, 12-1 momentum, 52-week high, moving averages, volatility, cross-sectional ranks |
 | `walkforward.py` | Rolling walk-forward training with label purging |
 | `daily_backtest.py` | Multi-day holding backtest: next-open fills, stops, time exits |
-| `research.py` | `diagnose`: walk-forward IC, Newey-West t-stat, decile table vs costs |
+| `research.py` | `diagnose`: cross-sectional walk-forward IC, Newey-West t-stat, decile table vs costs |
+| `universe.py` | Broad US universe builder, including delisted stocks |
+| `news.py` | News fetch/store, close-aligned timing, attention, sentiment and event features |
 | `scanner.py` | Filters the universe on price, liquidity and relative volume; keeps the top N |
 | `strategy/` | `momentum` baseline (empirically calibrated) and `ml` (gradient-boosted classifier + regressor) |
 | `risk.py` | Sizing, position caps, gross exposure, edge-after-costs gate, stop / take-profit / time exits, end-of-day flatten, daily loss kill switch |
