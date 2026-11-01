@@ -1,0 +1,75 @@
+# tradebot configuration
+#
+# SAFETY: mode defaults to "paper". Switching to "live" also requires the
+# environment variable TRADEBOT_CONFIRM_LIVE=I_UNDERSTAND_THE_RISKS.
+
+mode: paper          # paper | live
+bar_minutes: 5       # intraday bar size used for features and decisions
+db_path: data/tradebot.sqlite
+
+markets:
+  US:
+    enabled: true
+    broker: alpaca                # alpaca | ibkr | sim
+    starting_capital: 10000       # sleeve size in local currency (USD)
+    benchmark: SPY
+    min_price: 5.0
+    min_bar_dollar_volume: 250000 # avg traded value per bar, local currency
+    holidays: []                  # YYYY-MM-DD; fill from the exchange calendar
+    universe: [AAPL, MSFT, NVDA, AMZN, META, GOOGL, TSLA, AMD, AVGO, JPM,
+               XOM, UNH, NFLX, COST, CRM, ORCL, INTC, BAC, WMT, PLTR]
+    costs:                        # ASSUMPTIONS - check against your broker
+      commission_per_share: 0.0
+      commission_bps: 0.0
+      min_commission: 0.0
+      spread_bps: 2.0             # full quoted spread; half is paid per side
+      slippage_bps: 3.0           # per side, on top of half-spread
+
+  ASX:
+    enabled: true
+    broker: ibkr
+    starting_capital: 10000       # AUD
+    benchmark: STW
+    min_price: 1.0
+    min_bar_dollar_volume: 50000
+    holidays: []
+    universe: [BHP, CBA, CSL, NAB, WBC, ANZ, MQG, WES, FMG, RIO,
+               WDS, TLS, WOW, GMG, TCL, ALL, QBE, STO, REA, XRO]
+    costs:                        # ASSUMPTIONS - check IBKR's current ASX pricing
+      commission_per_share: 0.0
+      commission_bps: 8.0
+      min_commission: 6.0
+      spread_bps: 6.0
+      slippage_bps: 5.0
+
+strategy:
+  name: momentum        # momentum (baseline) | ml
+  horizon_bars: 6       # predict return over the next N bars (30 min at 5-min bars)
+  train_days: 20        # walk-forward training window, in trading days
+  min_train_days: 10    # don't trade until at least this much history exists
+  retrain_every_days: 5
+  min_train_samples: 500
+  min_prob_up: 0.52
+
+scanner:
+  top_n: 10
+  min_relative_volume: 1.2
+
+risk:
+  max_position_pct: 0.10        # of sleeve equity, per position
+  max_positions: 5
+  max_gross_exposure_pct: 0.60
+  daily_loss_limit_pct: 0.02    # kill switch for the day
+  stop_loss_pct: 0.01
+  take_profit_pct: 0.02
+  min_edge_bps: 5.0             # expected return minus round-trip costs must beat this
+  no_new_entries_minutes_before_close: 30
+  flatten_minutes_before_close: 10
+
+alpaca:
+  feed: iex             # iex (free) | sip (paid)
+
+ibkr:
+  host: 127.0.0.1
+  port: 7497            # 7497 = TWS paper, 4002 = Gateway paper
+  client_id: 17

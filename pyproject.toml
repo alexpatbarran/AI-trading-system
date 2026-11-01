@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tradebot"
+version = "0.1.0"
+description = "Intraday algorithmic trading system for US and ASX equities (paper trading by default)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "pydantic>=2.5",
+    "pyyaml>=6.0",
+    "scikit-learn>=1.4",
+]
+
+[project.optional-dependencies]
+alpaca = ["alpaca-py>=0.30"]
+ibkr = ["ib_async>=1.0"]
+dev = ["pytest>=8"]
+all = ["alpaca-py>=0.30", "ib_async>=1.0", "pytest>=8"]
+
+[project.scripts]
+tradebot = "tradebot.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
