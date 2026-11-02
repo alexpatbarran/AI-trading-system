@@ -181,6 +181,30 @@ def daily_news_table(news: pd.DataFrame, market: Market, days: list[date]) -> pd
     ).reset_index()
 
 
+def coverage_start(table: pd.DataFrame, days: list[date], window: int = 20, frac: float = 0.25) -> date | None:
+    """First trading day of SUSTAINED news coverage.
+
+    The earliest article isn't a safe start: the API returns stray old articles
+    (e.g. from 2012 when the fetch began in 2021), and treating the years in
+    between as "no news" would teach the model a fake pattern. Coverage starts
+    on the first day the rolling `window`-day article count reaches `frac` of
+    its median over the covered period.
+    """
+    if table.empty:
+        return None
+    per_day = table.groupby("session_date")["news_count_1d"].sum().reindex(days, fill_value=0.0)
+    rolling = per_day.rolling(window, min_periods=window).sum()
+    active = rolling[rolling > 0]
+    if active.empty:
+        return None
+    ok = rolling >= frac * float(active.median())
+    if not ok.any():
+        return None
+    # rolling window ends on the day it's measured, so coverage began `window - 1` days earlier
+    first = int(np.argmax(ok.to_numpy()))
+    return days[max(0, first - window + 1)]
+
+
 def add_news_features(feats: pd.DataFrame, news: pd.DataFrame, market: Market, warmup_days: int = 60) -> pd.DataFrame:
     """Merge news features into a daily feature frame. Rows before news coverage (+warmup) get NaN."""
     days = sorted(feats["session_date"].unique())
@@ -196,10 +220,10 @@ def add_news_features(feats: pd.DataFrame, news: pd.DataFrame, market: Market, w
     norm_5d = g["news_count_1d"].transform(lambda s: s.shift(5).rolling(60, min_periods=20).mean()) * 5
     df["news_abn_5d"] = count_5d / (norm_5d + 1.0)
 
-    if news.empty:
+    start = coverage_start(table, days)
+    if start is None:
         df[NEWS_FEATURES] = np.nan
         return df
-    start = news["created_at"].min().tz_convert(SESSIONS[market].tz).date()
     covered = [d for d in days if d >= start]
     cutoff = covered[min(warmup_days, len(covered) - 1)] if covered else None
     if cutoff is None:

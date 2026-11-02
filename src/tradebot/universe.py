@@ -79,6 +79,8 @@ def build_us_universe(data, trading_client, years: int, top_n: int, min_months: 
 
     from tradebot.data.alpaca import MONTHLY
 
+    # trading_client must be created with raw_data=True: alpaca-py's Asset model rejects
+    # exchanges it doesn't know yet (e.g. TXSE, the Texas Stock Exchange), so we take dicts.
     assets = []
     for status in (AssetStatus.ACTIVE, AssetStatus.INACTIVE):
         got = trading_client.get_all_assets(GetAssetsRequest(status=status, asset_class=AssetClass.US_EQUITY))

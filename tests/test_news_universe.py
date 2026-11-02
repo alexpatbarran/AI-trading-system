@@ -72,6 +72,19 @@ def test_news_features_are_nan_before_coverage():
     assert out[out["session_date"] >= days[70]][NEWS_FEATURES].notna().all().all()
 
 
+def test_stray_old_article_does_not_start_coverage():
+    """One 2012-style stray article must not make years of 'no news' look like real data."""
+    days = trading_days(Market.US, date(2026, 6, 30), 400)
+    feats = add_daily_features(generate_daily_bars(Market.US, ["AAA", "BBB"], days, seed=1), Market.US)
+    to_utc = lambda d: (pd.Timestamp(datetime.combine(d, datetime.min.time()), tz="America/New_York")  # noqa: E731
+                        + pd.Timedelta(hours=12)).tz_convert("UTC")
+    rows = [(0, "AAA", to_utc(days[5]), "stray old article", "x", 1)]
+    rows += [(i + 1, "AAA" if i % 2 else "BBB", to_utc(d), "headline", "x", 1) for i, d in enumerate(days[300:])]
+    out = add_news_features(feats, _news(rows), Market.US, warmup_days=20)
+    assert out[out["session_date"] < days[300]][NEWS_FEATURES].isna().all().all()
+    assert out[out["session_date"] >= days[320]][NEWS_FEATURES].notna().all().all()
+
+
 def test_news_store_roundtrip(tmp_path):
     store = NewsStore(tmp_path / "n.sqlite")
     df = _news([(1, "AAA", "2026-01-02 15:00", "h", "benzinga", 2), (1, "BBB", "2026-01-02 15:00", "h", "benzinga", 2)])

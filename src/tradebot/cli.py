@@ -222,7 +222,7 @@ def cmd_build_universe(args, settings: Settings) -> int:
     mcfg = settings.markets[Market.US]
     if not mcfg.broad_universe_file:
         raise SystemExit("Set markets.US.broad_universe_file in the config")
-    trading = TradingClient(os.environ["ALPACA_API_KEY"], os.environ["ALPACA_SECRET_KEY"], paper=True)
+    trading = TradingClient(os.environ["ALPACA_API_KEY"], os.environ["ALPACA_SECRET_KEY"], paper=True, raw_data=True)
     data = AlpacaData(feed=settings.alpaca.feed, daily_feed=settings.alpaca.daily_feed)
     symbols = build_us_universe(data, trading, args.years, args.top, args.min_months, args.min_price)
     note = (f"top {args.top} by monthly traded value in >= {args.min_months} months of the last {args.years} "
