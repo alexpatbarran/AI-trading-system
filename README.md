@@ -1,6 +1,6 @@
 # tradebot
 
-An intraday algorithmic trading system for **US and ASX equities**, organised as a pipeline:
+An algorithmic trading research system for **US and ASX equities**, organised as a pipeline. **Findings: see [RESEARCH.md](RESEARCH.md).**
 
 ```
 data → features → scanner → strategy (prediction) → risk manager → broker → journal
