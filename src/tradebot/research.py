@@ -163,6 +163,55 @@ def diagnose_daily(
     return summarise(preds, market, strategy.name, f"{h} days", h - 1, rt)
 
 
+def feature_scan(
+    settings: Settings, market: Market, bars: pd.DataFrame, news: pd.DataFrame | None = None
+) -> pd.DataFrame:
+    """Cross-sectional IC of each raw feature against the forward return, over the whole sample.
+
+    Exploratory: there's no training, so no look-ahead, but scanning many features
+    and picking the best is itself a form of overfitting. Treat |t| < 3 with suspicion.
+    """
+    from tradebot.daily_backtest import daily_feature_frame, required_features, tradeable
+
+    feats = tradeable(daily_feature_frame(settings, market, bars, news), settings, market)
+    from tradebot.daily_features import MARKET_FEATURES
+
+    required = required_features(news)
+    feats = feats.dropna(subset=required + ["fwd_ret"])
+    cols = [c for c in required if c not in MARKET_FEATURES]  # same value for every stock on a day
+    rows = []
+    lags = settings.daily.horizon_days - 1
+    for c in cols:
+        ic = feats.groupby("timestamp").apply(lambda g, c=c: _rank_corr(g[c], g["fwd_ret"]), include_groups=False)
+        ic = ic.dropna()
+        rows.append({"feature": c, "ic": float(ic.mean()), "t_stat": newey_west_tstat(ic, lags), "days": len(ic)})
+    return pd.DataFrame(rows).sort_values("t_stat", key=abs, ascending=False).reset_index(drop=True)
+
+
+FEATURE_NOTES = {
+    "ret_1d": "yesterday's return", "ret_5d": "1-week return", "ret_21d": "1-month return",
+    "mom_12_1": "12-month momentum", "vol_21d": "volatility", "vol_ratio": "volume vs normal",
+    "dist_ma50": "vs 50-day average", "dist_ma200": "vs 200-day average", "dist_52w_high": "vs 52-week high",
+    "gap": "overnight gap", "range_pct": "daily high-low range", "rsi_14": "RSI",
+    "excess_ret_5d": "1-week return vs market", "excess_ret_21d": "1-month return vs market",
+    "market_ret_5d": "market 1-week return", "market_ret_21d": "market 1-month return",
+    "market_vol_21d": "market volatility", "news_count_1d": "articles today", "news_abn_5d": "unusual news volume",
+    "sent_1d": "headline sentiment today", "sent_5d": "headline sentiment 5d", "event_1d": "news events today",
+    "event_5d": "news events 5d",
+}
+
+
+def format_feature_scan(df: pd.DataFrame) -> str:
+    lines = [
+        "  feature           ic        t-stat  meaning",
+        "  (+ = higher value -> higher future return; |t| >= 3 marked strong)",
+    ]
+    for r in df.itertuples():
+        flag = "  <-- strong" if abs(r.t_stat) >= 3 else ""
+        lines.append(f"  {r.feature:16s} {r.ic:+.4f}   {r.t_stat:+6.2f}   {FEATURE_NOTES.get(r.feature, '')}{flag}")
+    return "\n".join(lines)
+
+
 def format_diagnosis(d: Diagnosis) -> str:
     lines = [
         f"\n=== {d.market.value} | strategy={d.strategy} | horizon={d.horizon} | signal diagnostics ===",

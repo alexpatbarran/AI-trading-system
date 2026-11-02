@@ -159,6 +159,22 @@ def cmd_diagnose(args, settings: Settings) -> int:
     return 0
 
 
+def cmd_features(args, settings: Settings) -> int:
+    from tradebot.research import feature_scan, format_feature_scan
+
+    args.timeframe = "daily"
+    args.strategy = None
+    _apply_overrides(args, settings)
+    for market in _markets(settings, args.markets):
+        bars = _load_bars(args, settings, market)
+        if bars is None:
+            continue
+        df = feature_scan(settings, market, bars, _load_news(args, settings, market, bars))
+        print(f"\n=== {market.value} {_label(args)} | feature scan | horizon={settings.daily.horizon_days} days ===")
+        print(format_feature_scan(df))
+    return 0
+
+
 def cmd_backtest(args, settings: Settings) -> int:
     from tradebot.daily_backtest import DailyBacktester
 
@@ -287,7 +303,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    for name, help_ in (("backtest", "walk-forward backtest"), ("diagnose", "does the model predict anything?")):
+    for name, help_ in (
+        ("backtest", "walk-forward backtest"),
+        ("diagnose", "does the model predict anything?"),
+        ("features", "daily: which individual features predict returns? (exploratory)"),
+    ):
         b = sub.add_parser(name, help=help_)
         b.add_argument("--timeframe", choices=["intraday", "daily"], default="intraday")
         b.add_argument("--synthetic", action="store_true", help="use generated data (no API keys)")
@@ -337,6 +357,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_backtest(args, settings)
     if args.cmd == "diagnose":
         return cmd_diagnose(args, settings)
+    if args.cmd == "features":
+        return cmd_features(args, settings)
     if args.cmd == "fetch":
         return cmd_fetch(args, settings)
     if args.cmd == "build-universe":

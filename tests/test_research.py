@@ -2,7 +2,7 @@ from datetime import date
 
 import pandas as pd
 
-from tradebot.data.synthetic import generate_bars, trading_days
+from tradebot.data.synthetic import generate_bars, generate_daily_bars, trading_days
 from tradebot.domain import Market
 from tradebot.markets import regular_session_only
 from tradebot.research import diagnose, format_diagnosis
@@ -24,3 +24,16 @@ def test_diagnose_detects_planted_signal(settings):
     assert d.ic_mean > 0 and d.ic_tstat > 3
     assert d.deciles["realised_bps"].iloc[-1] > d.deciles["realised_bps"].iloc[0]
     assert "verdict" in format_diagnosis(d)
+
+
+def test_feature_scan_finds_planted_reversal(settings):
+    from tradebot.research import feature_scan
+
+    settings.markets[Market.US].benchmark = None
+    settings.daily.min_dollar_volume = 0
+    days = trading_days(Market.US, date(2026, 5, 29), 320)
+    bars = generate_daily_bars(Market.US, [f"F{i}" for i in range(40)], days, momentum=-0.4, seed=3)
+    scan = feature_scan(settings, Market.US, bars)
+    top = scan.iloc[0]
+    assert top["feature"] in {"ret_1d", "ret_5d", "excess_ret_5d"} and top["t_stat"] < -3
+    assert "market_ret_5d" not in set(scan["feature"])
