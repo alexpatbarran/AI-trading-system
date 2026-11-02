@@ -82,7 +82,7 @@ def test_stray_old_article_does_not_start_coverage():
     rows += [(i + 1, "AAA" if i % 2 else "BBB", to_utc(d), "headline", "x", 1) for i, d in enumerate(days[300:])]
     out = add_news_features(feats, _news(rows), Market.US, warmup_days=20)
     assert out[out["session_date"] < days[300]][NEWS_FEATURES].isna().all().all()
-    assert out[out["session_date"] >= days[320]][NEWS_FEATURES].notna().all().all()
+    assert out[out["session_date"] >= days[330]][NEWS_FEATURES].notna().all().all()
 
 
 def test_news_store_roundtrip(tmp_path):

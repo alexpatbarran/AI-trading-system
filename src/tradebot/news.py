@@ -200,9 +200,8 @@ def coverage_start(table: pd.DataFrame, days: list[date], window: int = 20, frac
     ok = rolling >= frac * float(active.median())
     if not ok.any():
         return None
-    # rolling window ends on the day it's measured, so coverage began `window - 1` days earlier
-    first = int(np.argmax(ok.to_numpy()))
-    return days[max(0, first - window + 1)]
+    # conservative: start on the day the threshold is first met (may drop a few early days)
+    return days[int(np.argmax(ok.to_numpy()))]
 
 
 def add_news_features(feats: pd.DataFrame, news: pd.DataFrame, market: Market, warmup_days: int = 60) -> pd.DataFrame:
